@@ -154,6 +154,9 @@ function Reboot-FileClusterNode {
 
     Write-Host "Suspending $($Node.Name) on $($Node.Cluster) at $(Get-Date)"
     Suspend-ClusterNode -Cluster $Node.Cluster -Name $Node.Name -Drain
+    do {
+        Start-Sleep 5
+    } until ($Node.State -eq "Paused")
     try {
         Write-Host "Restarting $Node at $(Get-date)"
         Restart-Computer -ComputerName $Node.Name -Wait -For PowerShell -Force
@@ -162,7 +165,12 @@ function Reboot-FileClusterNode {
         Write-Host "Unable to restart $Node"
         break
     }
-    Write-Host "Reboot of $Node Complete, attempting to resume"
+    Start-Sleep 10
+    Write-Host "Reboot of $Node Complete, waiting to join Cluster"
+    do {
+        Start-Sleep 5
+    } until ((Get-ClusterNode -Cluster $Node.Cluster -Name $Node.Name).State -ne "Down")
+    Write-Host "$Node has now re-joined the cluster, attempting to resume $Node"
     try {
         Write-Host "Resuming $Node at $(Get-Date) $($Node.Cluster)"
         Resume-ClusterNode -Cluster $Node.Cluster -Name $Node.Name
@@ -189,8 +197,11 @@ foreach ($node in $NodeList) {
                 Start-Sleep 30
                 $StorJob = (Invoke-Command -ComputerName $Node.Name -ScriptBlock {Get-StorageJob | Where-Object {$_.JobState -eq "Running" -or $_.JobState -eq "Suspended"}})
                 if (($StorJob.Count -gt 0) -and (($StorJob | Where-Object {$_.JobState -ne "Suspended"}).Count -eq 0)) {
-                    Write-Host "Storage Jobs appear to be hung all at suspended, attempting to optimize storage pool to resolve"
-                    Get-StoragePool | Where-Object {$_.IsPrimordial -eq $false} | Optimize-StoragePool
+                    $i++
+                    if ($i -eq 4) {
+                        Write-Host "Storage Jobs appear to be hung all at suspended, attempting to optimize storage pool to resolve"
+                        Invoke-Command -ComputerName $Node.Name -ScriptBlock {Get-StoragePool | Where-Object {$_.IsPrimordial -eq $false} | Optimize-StoragePool}
+                    }
                 }
             } until ($StorJob.Count -eq 0)
             Reboot-FileClusterNode -Node $Node.Name
