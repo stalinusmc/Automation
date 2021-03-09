@@ -30,12 +30,16 @@ $encodedBody = $enc.GetBytes($body)
 Import-Module VMware.VimAutomation.Core -Force
 # Connect to vCenter server.
 Connect-VIServer $vcserver
+
+$VM = Get-VM -Name $decomserver
 #Stop VM
-Stop-VM -VM $decomserver -Confirm:$false
+if ($VM.Powerstate -eq 'PoweredOn') {
+	$VM | Stop-VM -Confirm:$false
+}
 #Perm Delete the VM
-Remove-VM -VM $decomserver -DeletePermanently:$true -Confirm:$false
+$VM | Remove-VM -DeletePermanently:$true -Confirm:$false
 #Remove the object from AD
 Get-ADComputer $decomserver | Remove-ADObject -Recursive -Confirm:$False
-Invoke-RestMethod -uri $uri -Method Post -body $encodedBody -ContentType 'application/json';
+Invoke-RestMethod -Uri $uri -Method Post -body $encodedBody -ContentType 'application/json';
 }
 
