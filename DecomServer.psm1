@@ -23,7 +23,11 @@
         # Parameter asking if would like to cleanup Active Directory (primarily used to exclude, as it is default enabled)
         [Parameter(Mandatory=$false)]
         [bool]
-        $ADCleanup = $true
+        $ADCleanup = $true,
+        # Parameter Asking if you would like to cleanup Microsoft Endpoint configuration Manager (formerly SCCM)
+        [Parameter(Mandatory=$false)]
+        [bool]
+        $MECMCleanup = $true
 	)
 #Below are the variables
 foreach ($decomserver in $Serverlist) {
@@ -32,6 +36,7 @@ $ErrorActionPreference = 'Stop'
 $error.clear()
 $title = "Decom of $decomserver"
 $vcserver = "vcenter.tssn.services"
+$MECMServer = "TSSN-MECM-P01.ds.tssn.services"
 $color = '15105570'
 $time = Get-date -Date (Get-Date).ToUniversalTime()  -Format yyyy-MM-ddTHH:mm:ss.fffZ
 $DHCPServer = "TSSN-DHCP.ds.tssn.services"
@@ -44,6 +49,7 @@ $AzureObjectExist = $null
 $ADObject = $null
 $DHCPObject = $null
 $description = $null
+$MECMObject = $null
 
 $webHookUrl = "https://discord.com/api/webhooks/811280996723982396/mOwQD-Z0sof8n9FbFuUIXqvZf8DqYg47JRIbxJM1tfAqIIDr_wrusknx0UzbNJLYqvHG"
 #region Collect Objects to be cleaned up
@@ -122,7 +128,7 @@ else {
         }
     }
 }
-#region Collect and Parse DNS Records
+#region Search for and collect other objects to determine if anything is going to be missed
 $ADDC = Get-ADDomainController -Verbose
 $DNSZones = Get-DnsServerZone -ComputerName $ADDC.name
 $DHCPLeases = Get-DhcpServerv4Scope -ComputerName $DHCPServer | Get-DhcpServerv4Lease -ComputerName $DHCPServer
@@ -137,6 +143,17 @@ if ($ADObjectExist) {
         }
     }
     $DHCPObject = $DHCPLeases | Where-Object {$_.HostName -eq $ADObject.DNSHostName}
+    $MECMObject = Invoke-Command -ComputerName $MECMServer -Scriptblock {
+        Import-Module (Join-Path $(Split-Path $env:SMS_ADMIN_UI_PATH) ConfigurationManager.psd1)
+        $SiteCode = Get-PSDrive -PSProvider CMSITE
+        Set-Location -Path "$($SiteCode.Name):\"
+        try {
+            Get-CMDevice -Name $using:ADObject.Name
+        }
+        catch {
+            Write-Host "Unable to find $($using:ADObject.Name)"
+        }
+    }
 }
 elseif ($VMWareObjectExists) {
     foreach ($Zone in $DNSZones) {
@@ -148,6 +165,17 @@ elseif ($VMWareObjectExists) {
         }
     }
     $DHCPObject = $DHCPLeases | Where-Object {$_.HostName -eq $VM.ExtensionData.Guest.HostName}
+    $MECMObject = Invoke-Command -ComputerName $MECMServer -Scriptblock {
+        Import-Module (Join-Path $(Split-Path $env:SMS_ADMIN_UI_PATH) ConfigurationManager.psd1)
+        $SiteCode = Get-PSDrive -PSProvider CMSITE
+        Set-Location -Path "$($SiteCode.Name):\"
+        try {
+            Get-CMDevice -Name $using:ADObject.Name
+        }
+        catch {
+            Write-Host "Unable to find $($using:VM.ExtensionData.Guest.Hostname)"
+        }
+    }
 }
 elseif ($DNSCleanup -or $DHCPCleanup) {
     foreach ($Zone in $DNSZones) {
@@ -159,6 +187,17 @@ elseif ($DNSCleanup -or $DHCPCleanup) {
         }
     }
     $DHCPObject = $DHCPLeases | Where-Object {$_.HostName -like "*$decomserver*"}
+    $MECMObject = Invoke-Command -ComputerName $MECMServer -Scriptblock {
+        Import-Module (Join-Path $(Split-Path $env:SMS_ADMIN_UI_PATH) ConfigurationManager.psd1)
+        $SiteCode = Get-PSDrive -PSProvider CMSITE
+        Set-Location -Path "$($SiteCode.Name):\"
+        try {
+            Get-CMDevice -Name $using:decomserver
+        }
+        catch {
+            Write-Host "Unable to find $using:decomserver"
+        }
+    }
 }
 if ($TotalDNS.Count -ge 1) {
     $DNSObjectExist = $true
@@ -171,6 +210,9 @@ if ($DHCPObject.IPAddress.Count -ge 1) {
     Write-Verbose "DHCP Objects Found"
 }
 #endregion
+if ([bool]$MECMObject) {
+    $MECMObjectExists = $true
+}
 
 #region Manage Defender ATP offboarding
 if ($AzureCleanup) {
@@ -224,6 +266,8 @@ if ($AzureCleanup) {
 
 #endregion
 
+
+
 #region Validating cleanup actions if objects exist that were not asked to be cleaned
 if (!$VMwareCleanup -and $VMObjectExist) {
     do {
@@ -261,6 +305,15 @@ if (!$DHCPCleanup -and $DHCPObjectExist) {
         $DHCPCleanup = $true
     }
 }
+if (!$MECMCleanup -and $MECMObjectExists) {
+    do {
+        $i++
+        $MECMCleanup = Read-Host -Prompt "There are components detected in VMware that match the server being decommed, ignore? (yes/no)"
+    } until (($MECMCleanup.ToLower() -ne 'yes' -or 'no' -or 'y' -or 'n') -or $i -ge 3)
+    if ($MECMCleanup.ToLower() -eq 'no' -or 'n') {
+        $MECMCleanup = $true
+    }
+}
 if (!$AzureCleanup -and $AzureObjectExist) {
     do {
         $i++
@@ -281,7 +334,6 @@ if ($AzureObjectExist -and $AzureCleanup) {
     Write-Verbose "Working to cleanup Azure"
     foreach ($AzureObject in $machineid) {
         try {
-        
             $removeresponse = Invoke-RestMethod "https://api.security.microsoft.com/api/machines/$($AzureObject)/offboard" -Method 'POST' -Headers $headers -Body $body -ErrorAction SilentlyContinue
         }
         catch {
@@ -333,7 +385,6 @@ if ($DNSObjectExist -and $DNSCleanup) {
 }
 if ($DHCPObjectExist -and $DHCPCleanup) {
     Write-Verbose "Working to cleanup DHCP"
-    
     foreach ($Lease in $DHCPObject) {
         try {    
             if ($Lease.AddressState -like "*Reservation*") {
@@ -351,6 +402,24 @@ if ($DHCPObjectExist -and $DHCPCleanup) {
     }
     $description += "**DHCP Leases Removed**`n"
     Write-Verbose "DHCP Cleanup Complete"
+}
+if ($MECMCleanup -and $MECMObjectExists) {
+    $MECMSuccess = Invoke-Command -ComputerName $MECMServer -Scriptblock {
+        Import-Module (Join-Path $(Split-Path $env:SMS_ADMIN_UI_PATH) ConfigurationManager.psd1)
+        $SiteCode = Get-PSDrive -PSProvider CMSITE
+        Set-Location -Path "$($SiteCode.Name):\"
+        try {
+            Remove-CMDevice -Name $using:MECMObject.Name -Force
+            $true
+        }
+        catch {
+            Write-Host "Unable to Remove $($using:MECMObject.Name)"
+            $false
+        }
+    }
+    if ($MECMSuccess) {
+        $description += "**MECM Device Removed**"
+    }
 }
 #Stop VM
 if ($VMwareCleanup -and $VMObjectExist) {
