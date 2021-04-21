@@ -418,7 +418,7 @@ if ($MECMCleanup -and $MECMObjectExists) {
         }
     }
     if ($MECMSuccess) {
-        $description += "**MECM Device Removed**"
+        $description += "**MECM Device Removed**`n"
     }
 }
 #Stop VM

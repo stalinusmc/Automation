@@ -30,8 +30,8 @@ import-module dbatools
 try {
     # connect to the AG listener, get the name of the primary and all secondaries
         $replicas = Get-DbaAgReplica -SqlInstance $AvailabilityGroupName 
-        $primaryInstance = $replicas | Where Role -eq Primary | select -ExpandProperty name
-        $secondaryInstances = $replicas | Where Role -ne Primary | select -ExpandProperty name
+        $primaryInstance = $replicas | Where-Object Role -eq Primary | Select-Object -ExpandProperty name
+        $secondaryInstances = $replicas | Where-Object Role -ne Primary | Select-Object -ExpandProperty name
     # create a connection object to the primary
         $primaryInstanceConnection = Connect-DbaInstance $primaryInstance -ClientName $ClientName
     # loop through each secondary replica and sync the logins
